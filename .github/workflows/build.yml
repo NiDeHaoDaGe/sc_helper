@@ -1,0 +1,85 @@
+name: Build sc_helper
+
+# Phase 0 — macOS universal build only. Phase 3 adds windows-2022 to the matrix.
+#
+# Trigger:
+#   * push to main — every commit produces an artifact so we can pull a fresh
+#     binary into sc_mac without re-tagging
+#   * tag v* — also attaches to a GitHub Release for distribution
+#   * workflow_dispatch — manual
+#
+# Output: a universal `sc-helper`, `sc-helper-install`, `sc-helper-uninstall`
+# triple (arm64 + x86_64 lipo'd) uploaded as an artifact named
+# `sc-helper-macos-universal-<sha>`.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    # macos-14 = Sonoma + Xcode 15, matches what sc_mac builds against
+    # (Flutter 3.24 pinned to this runner — see client-macos/.github/...).
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + cross targets
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustc --version
+          cargo --version
+
+      - name: Build arm64
+        env:
+          # Match the sc_mac min deployment target. lipo will refuse to merge
+          # if the two slices have different min-versions and the user runs
+          # on a slightly older mac.
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86_64
+        env:
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - name: Lipo all three binaries into universal
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for bin in sc-helper sc-helper-install sc-helper-uninstall; do
+            lipo -create \
+              -output "dist/${bin}" \
+              "target/aarch64-apple-darwin/release/${bin}" \
+              "target/x86_64-apple-darwin/release/${bin}"
+            file "dist/${bin}"
+            ls -la "dist/${bin}"
+          done
+
+      - name: Run tests on host arch
+        # IPC + HMAC tests only — they're pure-Rust and arch-agnostic. Worth
+        # running before we ship to catch obvious regressions.
+        run: cargo test --release
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sc-helper-macos-universal-${{ github.sha }}
+          path: dist/
+          retention-days: 90
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/sc-helper
+            dist/sc-helper-install
+            dist/sc-helper-uninstall
+          draft: false
+          prerelease: false

@@ -1,0 +1,75 @@
+[package]
+name = "sc-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Privileged helper service for SCloud VPN client family"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/NiDeHaoDaGe/sc_helper"
+# Lowest macOS we support — matches what the sc_mac GUI ships against.
+# Setting it here is informational only (cargo doesn't propagate to linker
+# automatically), the actual `-mmacosx-version-min` comes from build.rs.
+rust-version = "1.75"
+
+# Crate has three binary targets:
+#   sc-helper           — the long-running daemon (the actual service)
+#   sc-helper-install   — short-lived; ran with admin to install the daemon
+#   sc-helper-uninstall — short-lived; ran with admin to uninstall the daemon
+#
+# Plus a library target (the default `src/lib.rs`) that all three share.
+# Sharing the IPC types this way means Request/Response/HMAC code can't
+# drift between binaries.
+
+[lib]
+name = "sc_helper"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sc-helper"
+path = "src/bin/sc_helper.rs"
+
+[[bin]]
+name = "sc-helper-install"
+path = "src/bin/sc_helper_install.rs"
+
+[[bin]]
+name = "sc-helper-uninstall"
+path = "src/bin/sc_helper_uninstall.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# HMAC-SHA256 for the IPC auth scheme described in docs/design.md.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+# Tokio for the IPC server. Single-threaded scheduler is enough — the helper's
+# job is "wait on socket, fork mihomo, wait on signals". No CPU-bound work.
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util", "signal", "time", "fs", "process", "sync"] }
+# `anyhow` for binary code paths (where we just want to surface "something
+# broke"); structured errors aren't worth the boilerplate at this size.
+anyhow = "1.0"
+# Light logging. We log to stderr; on mac launchd captures to StandardErrorPath,
+# on Win SCM the service host doesn't have stderr so we'll switch to event log
+# in phase 3.
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `nix` for POSIX bits we touch from the install binary: chown, chmod, mkdir.
+nix = { version = "0.28", features = ["user", "fs"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Phase 3 — leave the dep declarations here so `cargo metadata` is consistent
+# across platforms; phase-0 macOS build doesn't actually pull them.
+windows-service = "0.7"
+windows = { version = "0.56", features = ["Win32_Security", "Win32_System_Pipes", "Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[profile.release]
+# Helper binary lives in /Library/PrivilegedHelperTools — gets copied per
+# install, not run from disk a lot. Optimize for size over compile time, the
+# whole bundle is downloaded once.
+opt-level = "z"        # size
+lto = true             # link-time optimization
+codegen-units = 1      # let optimizer see whole crate
+strip = "symbols"      # drop debug symbols from the release binary
+panic = "abort"        # smaller binary; helper has no panic-recovery story anyway

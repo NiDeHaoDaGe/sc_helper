@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      Reference template — sc_helper_install.rs renders the same content inline
+      via render_plist(). This file lives alongside the binary mostly for
+      humans (audit, doc-by-example). If you edit one, edit both, and update
+      docs/design.md.
+    -->
+    <key>Label</key>
+    <string>com.scloud.helper</string>
+
+    <!-- Single-binary launch. No CLI args; the daemon reads its config from
+         the hard-coded socket path + IPC. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/PrivilegedHelperTools/com.scloud.helper/sc-helper</string>
+    </array>
+
+    <!-- launchd starts it at load time (i.e. boot) and at bootstrap. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- KeepAlive=true: launchd restarts the daemon if it exits for any
+         reason. This is the "auto-recover from crash" behavior we built the
+         whole helper architecture for. Default exit-code unconditional;
+         we don't want a SuccessfulExit branch because *any* helper exit is
+         unexpected from launchd's perspective. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- /Library/Logs is the canonical place for system-wide logs that the
+         Console.app shows under "System Reports". root:wheel 0644 by default. -->
+    <key>StandardOutPath</key>
+    <string>/Library/Logs/sc-helper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Library/Logs/sc-helper.err.log</string>
+
+    <!-- Tell env_logger / log crate the default level. RUST_LOG=info is the
+         minimum to see "started", "client connection", "spawned mihomo pid"
+         etc. Bumped to debug ad hoc by editing this plist + bootout/bootstrap. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+
+    <!-- We deliberately omit these keys (default behavior is correct for us):
+           * ThrottleInterval — launchd's default 10s between restarts is fine
+           * Disabled — would prevent the daemon from running; we want it on
+           * SessionCreate — daemon doesn't need a UI session
+           * UserName / GroupName — defaults to root for LaunchDaemons
+           * ProcessType — Standard is fine; we're not Background/Interactive
+    -->
+</dict>
+</plist>

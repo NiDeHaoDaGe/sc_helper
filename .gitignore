@@ -1,0 +1,13 @@
+# Rust
+/target/
+Cargo.lock.bak
+*.pdb
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Cross-compile output / lipo intermediates
+*.universal

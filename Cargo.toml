@@ -63,8 +63,13 @@ log = "0.4"
 env_logger = "0.11"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# `nix` for POSIX bits we touch from the install binary: chown, chmod, mkdir.
-nix = { version = "0.28", features = ["user", "fs"] }
+# `nix` for POSIX bits:
+#   user/fs       — install binary: chown, chmod, mkdir
+#   signal/process — supervisor: kill(Pid, SIGTERM) for graceful mihomo stop
+#                    (tokio's child.start_kill() sends SIGKILL only; we need
+#                    SIGTERM first to give mihomo a chance to bring down its
+#                    Wintun/utun adapter cleanly)
+nix = { version = "0.28", features = ["user", "fs", "signal", "process"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Phase 3 — leave the dep declarations here so `cargo metadata` is consistent

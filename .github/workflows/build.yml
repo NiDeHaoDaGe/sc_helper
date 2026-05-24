@@ -1,22 +1,23 @@
 name: Build sc_helper
 
-# Phase 0 — macOS universal build only. Phase 3 adds windows-2022 to the matrix.
+# Phase 0/1 — macOS universal build only. Phase 3 adds windows-2022 matrix.
 #
-# Trigger:
-#   * push to main — every commit produces an artifact so we can pull a fresh
-#     binary into sc_mac without re-tagging
-#   * tag v* — also attaches to a GitHub Release for distribution
-#   * workflow_dispatch — manual
+# **手动触发 only** (workflow_dispatch). macOS runner 计费 10× Linux,
+# helper 二进制极少改, 不值得 push 自动跑 (跟 sc_mac build-macos.yml 同
+# 一规矩, 用户 2026-05-20 定的)。需要新 build 时 Actions 页面 "Run
+# workflow", 想发版就先 tag v0.x.y 再触发。
 #
-# Output: a universal `sc-helper`, `sc-helper-install`, `sc-helper-uninstall`
-# triple (arm64 + x86_64 lipo'd) uploaded as an artifact named
-# `sc-helper-macos-universal-<sha>`.
+# 输出: 4 个 universal mach-o (sc-helper / -install / -uninstall / -ping,
+# arm64 + x86_64 lipo'd) 上传成 artifact + tarball。tag 触发时同时 attach
+# 到 GitHub Release 让 sc_mac CI curl 拉。
 
 on:
-  push:
-    branches: [main]
-    tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '可选: 推送到这个 tag 的 Release 作为附件 (留空只产 artifact)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -98,9 +99,12 @@ jobs:
           shasum -a 256 sc-helper-macos-universal.tar.gz
 
       - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+        # 只有用户在 dispatch 时填了 release_tag 才走这步。手动 only 流程
+        # 下没有自动 tag 触发, 所以判断的是 input 不是 ref。
+        if: ${{ inputs.release_tag != '' }}
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag }}
           files: |
             sc-helper-macos-universal.tar.gz
             dist/sc-helper

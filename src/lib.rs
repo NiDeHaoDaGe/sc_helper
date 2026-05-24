@@ -34,3 +34,8 @@ pub const IPC_SECRET: &[u8] =
 /// Crate-version string used by `GetVersion` responses + the GUI-side staleness
 /// check. Picked from Cargo at compile time.
 pub const HELPER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Short (12-char) git SHA of the build. Set by `build.rs`. Falls back to
+/// "unknown" when built outside a git checkout (`cargo publish` tarballs,
+/// downstream packagers).
+pub const HELPER_BUILD_SHA: &str = env!("SC_HELPER_BUILD_SHA");

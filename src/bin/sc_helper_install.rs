@@ -34,6 +34,9 @@ fn main() -> Result<()> {
 
     let src_helper = payload_dir.join("sc-helper");
     let src_mihomo = payload_dir.join("sc-mihomo");
+    // ping tool — useful for support diagnostics, no privilege needed at
+    // runtime but we ship it alongside helper so the path is predictable.
+    let src_ping = payload_dir.join("sc-helper-ping");
 
     if !src_helper.is_file() {
         bail!(
@@ -50,6 +53,12 @@ fn main() -> Result<()> {
             src_mihomo.display()
         );
     }
+    if !src_ping.is_file() {
+        eprintln!(
+            "[sc-helper-install] WARN: sc-helper-ping missing at {}; support diagnostics will be unavailable",
+            src_ping.display()
+        );
+    }
 
     // 1. Make install dir.
     let install_dir = Path::new(paths::macos::HELPER_INSTALL_DIR);
@@ -59,6 +68,7 @@ fn main() -> Result<()> {
     // 2. Copy binaries.
     let dst_helper = install_dir.join("sc-helper");
     let dst_mihomo = install_dir.join("sc-mihomo");
+    let dst_ping = install_dir.join("sc-helper-ping");
 
     // If helper is currently running, bootout first so we can overwrite the
     // binary. launchd holds an open handle to a running binary and on macOS
@@ -81,6 +91,13 @@ fn main() -> Result<()> {
         eprintln!("[sc-helper-install] copied sc-mihomo");
     }
 
+    if src_ping.is_file() {
+        std::fs::copy(&src_ping, &dst_ping).with_context(|| {
+            format!("copy {} → {}", src_ping.display(), dst_ping.display())
+        })?;
+        eprintln!("[sc-helper-install] copied sc-helper-ping");
+    }
+
     // 3. Write plist. Template lives in files/, baked in at compile time.
     let plist_body = render_plist();
     std::fs::write(paths::macos::LAUNCHD_PLIST, &plist_body).with_context(|| {
@@ -94,6 +111,12 @@ fn main() -> Result<()> {
     if dst_mihomo.is_file() {
         chown_root_wheel(&dst_mihomo)?;
         chmod(&dst_mihomo, 0o755)?;
+    }
+    if dst_ping.is_file() {
+        // ping tool stays root-owned (we put it under /Library) but world-
+        // executable so any user can run it for a support diagnostic.
+        chown_root_wheel(&dst_ping)?;
+        chmod(&dst_ping, 0o755)?;
     }
     chown_root_wheel(Path::new(paths::macos::LAUNCHD_PLIST))?;
     chmod(Path::new(paths::macos::LAUNCHD_PLIST), 0o644)?;

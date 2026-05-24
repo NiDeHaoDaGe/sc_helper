@@ -17,12 +17,19 @@ use crate::ipc::{
     timestamp_fresh, verify_hmac, Command, ErrorCode, Request, Response,
 };
 use crate::service::core::{MihomoStartConfig, SharedSupervisor};
-use crate::{HELPER_VERSION, IPC_SECRET};
+use crate::{HELPER_BUILD_SHA, HELPER_VERSION, IPC_SECRET};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // `read_frame`/`write_frame`/`anyhow::{Context, Result}` are only used inside
 // the cfg(unix) submodule below — re-imported there rather than here so the
 // non-unix build doesn't see unused-import warnings.
+
+/// Shared "trigger to ask the accept loop to wind down". Holds an Option
+/// because once fired, the sender is consumed; subsequent Shutdown IPCs
+/// see None and reply ShuttingDown without re-triggering.
+pub type ShutdownTrigger = Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>;
 
 /// Build a Response for one request. Pure dispatch — no I/O, no logging.
 /// I/O comes from the supervisor calls inside; logging happens at the caller.
@@ -30,6 +37,7 @@ pub async fn handle_request(
     request: Request,
     supervisor: &SharedSupervisor,
     mihomo_path_resolver: impl Fn() -> PathBuf,
+    shutdown_trigger: &ShutdownTrigger,
 ) -> Response {
     // Replay window check first (cheaper than HMAC).
     if !timestamp_fresh(request.timestamp_nanos) {
@@ -50,8 +58,7 @@ pub async fn handle_request(
 
         Command::GetVersion => Response::Version {
             version: HELPER_VERSION.to_string(),
-            // We don't currently bake build SHA in. Phase 4 may add via build.rs.
-            build_sha: String::new(),
+            build_sha: HELPER_BUILD_SHA.to_string(),
         },
 
         Command::StartMihomo {
@@ -96,16 +103,56 @@ pub async fn handle_request(
             }
         }
 
-        Command::SetDns { servers: _ } => {
-            // Phase 1: DNS commands not yet wired (we have the +14 macOS
-            // setDns code in Dart and may keep it there). Stubbed to OK so
-            // GUI can call without erroring out.
-            Response::DnsSet
+        Command::SetDns { servers } => {
+            #[cfg(target_os = "macos")]
+            {
+                match crate::service::dns::set_dns(&servers).await {
+                    Ok(()) => Response::DnsSet,
+                    Err(e) => Response::Error {
+                        code: ErrorCode::Internal,
+                        message: e.to_string(),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // Win uses HKCU system proxy (no DNS munging needed for the
+                // 5.0.9+1 default), and TUN mode uses Wintun's own
+                // dns-hijack inside mihomo. So this is intentionally a
+                // no-op on Win, not an error — the GUI calls it
+                // unconditionally and we want to no-op cleanly.
+                let _ = servers;
+                Response::DnsSet
+            }
         }
 
-        Command::ClearDns => Response::DnsCleared,
+        Command::ClearDns => {
+            #[cfg(target_os = "macos")]
+            {
+                match crate::service::dns::clear_dns().await {
+                    Ok(()) => Response::DnsCleared,
+                    Err(e) => Response::Error {
+                        code: ErrorCode::Internal,
+                        message: e.to_string(),
+                    },
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Response::DnsCleared
+            }
+        }
 
-        Command::Shutdown => Response::ShuttingDown,
+        Command::Shutdown => {
+            // Fire the trigger if not already fired. `take()` on the inner
+            // Option means a second Shutdown IPC sees None and is a no-op
+            // (we still reply ShuttingDown — idempotent from caller pov).
+            let sender = shutdown_trigger.lock().await.take();
+            if let Some(tx) = sender {
+                let _ = tx.send(());
+            }
+            Response::ShuttingDown
+        }
     }
 }
 
@@ -120,36 +167,64 @@ pub mod unix {
     use crate::paths;
     use anyhow::{Context, Result};
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
     use tokio::net::{UnixListener, UnixStream};
+    use tokio::sync::Mutex;
+
+    /// Resolve the socket path. Production: hard-coded /var/run path. Test:
+    /// `SC_HELPER_SOCKET_OVERRIDE` env var lets the integration test pick a
+    /// /tmp path so it can run as non-root without colliding with any
+    /// production helper the dev may have installed.
+    fn socket_path() -> String {
+        std::env::var("SC_HELPER_SOCKET_OVERRIDE")
+            .unwrap_or_else(|_| paths::macos::SOCKET_PATH.to_string())
+    }
 
     /// Bind the listener, set perms, accept forever. Returns only on fatal
-    /// error.
+    /// error or on Shutdown.
     ///
     /// `shutdown_signal` is a future that resolves when the helper should
-    /// exit cleanly (SIGTERM from launchd `bootout`, or IPC `Shutdown` from
-    /// the uninstall binary). When it fires, accept loop returns.
+    /// exit cleanly (SIGTERM from launchd `bootout`, or IPC `Shutdown`).
+    /// When it fires, the accept loop returns.
+    ///
+    /// The Shutdown command itself comes in via IPC, so the dispatch path
+    /// needs to tell the accept loop to wind down — we do that by handing
+    /// the dispatch path an `Arc<Mutex<Option<Sender<()>>>>` of a second
+    /// shutdown signal. The IPC handler grabs the Option, takes the Sender,
+    /// fires it; the select! below picks that up alongside the external
+    /// signal.
     pub async fn serve(
         supervisor: SharedSupervisor,
         mihomo_path_resolver: impl Fn() -> PathBuf + Clone + Send + 'static,
-        mut shutdown_signal: tokio::sync::oneshot::Receiver<()>,
+        mut external_shutdown: tokio::sync::oneshot::Receiver<()>,
     ) -> Result<()> {
-        let socket_path = paths::macos::SOCKET_PATH;
+        let socket_path = socket_path();
+        let socket_path_ref: &str = socket_path.as_str();
 
         // Clean up a stale socket from a previous (crashed) run.
-        if std::path::Path::new(socket_path).exists() {
-            std::fs::remove_file(socket_path)
-                .with_context(|| format!("removing stale socket {}", socket_path))?;
+        if std::path::Path::new(socket_path_ref).exists() {
+            std::fs::remove_file(socket_path_ref)
+                .with_context(|| format!("removing stale socket {}", socket_path_ref))?;
         }
 
-        let listener = UnixListener::bind(socket_path)
-            .with_context(|| format!("binding {}", socket_path))?;
+        let listener = UnixListener::bind(socket_path_ref)
+            .with_context(|| format!("binding {}", socket_path_ref))?;
 
         // chmod 666 so unprivileged GUI can connect. HMAC is the auth, not
         // filesystem perms.
-        std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666))
-            .with_context(|| format!("chmod 666 {}", socket_path))?;
+        std::fs::set_permissions(socket_path_ref, std::fs::Permissions::from_mode(0o666))
+            .with_context(|| format!("chmod 666 {}", socket_path_ref))?;
 
-        log::info!("sc-helper listening on {}", socket_path);
+        log::info!("sc-helper listening on {}", socket_path_ref);
+
+        // IPC-triggered shutdown channel. Wrap the Sender in
+        // Arc<Mutex<Option<...>>> so per-connection dispatch can `take()`
+        // it on the first Shutdown command, and subsequent Shutdowns become
+        // no-ops (single-use channel).
+        let (ipc_shutdown_tx, mut ipc_shutdown_rx) =
+            tokio::sync::oneshot::channel::<()>();
+        let shutdown_trigger: super::ShutdownTrigger =
+            Arc::new(Mutex::new(Some(ipc_shutdown_tx)));
 
         loop {
             tokio::select! {
@@ -158,8 +233,9 @@ pub mod unix {
                         Ok((stream, _)) => {
                             let sup = supervisor.clone();
                             let resolver = mihomo_path_resolver.clone();
+                            let trig = shutdown_trigger.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = handle_connection(stream, sup, resolver).await {
+                                if let Err(e) = handle_connection(stream, sup, resolver, trig).await {
                                     log::warn!("client connection: {e}");
                                 }
                             });
@@ -172,15 +248,19 @@ pub mod unix {
                         }
                     }
                 }
-                _ = &mut shutdown_signal => {
-                    log::info!("shutdown signal received, draining accept loop");
+                _ = &mut external_shutdown => {
+                    log::info!("external shutdown (SIGTERM), draining accept loop");
+                    break;
+                }
+                _ = &mut ipc_shutdown_rx => {
+                    log::info!("IPC Shutdown received, draining accept loop");
                     break;
                 }
             }
         }
 
         // Best-effort socket cleanup so the next launch finds a clean slate.
-        let _ = std::fs::remove_file(socket_path);
+        let _ = std::fs::remove_file(socket_path_ref);
         Ok(())
     }
 
@@ -190,11 +270,18 @@ pub mod unix {
         mut stream: UnixStream,
         supervisor: SharedSupervisor,
         mihomo_path_resolver: impl Fn() -> PathBuf,
+        shutdown_trigger: super::ShutdownTrigger,
     ) -> Result<()> {
         let body = read_frame(&mut stream).await?;
         let request: Request = serde_json::from_slice(&body)
             .context("parsing IPC request JSON")?;
-        let response = handle_request(request, &supervisor, mihomo_path_resolver).await;
+        let response = handle_request(
+            request,
+            &supervisor,
+            mihomo_path_resolver,
+            &shutdown_trigger,
+        )
+        .await;
         let body = serde_json::to_vec(&response)
             .context("serializing IPC response JSON")?;
         write_frame(&mut stream, &body).await?;

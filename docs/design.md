@@ -152,6 +152,67 @@ surfaces "helper version stale, reinstall required".
 | User uninstalls GUI | Helper keeps running (orphaned). Acceptable — it does nothing without IPC traffic. **TODO phase 4**: GUI uninstaller runs `sc_helper_uninstall` |
 | GUI reconnect while mihomo already running | GUI calls `Ping` first; if helper reports `MihomoRunning`, GUI skips `StartMihomo` and goes straight to `MihomoController` setup |
 
+## GUI packaging story (phase 2 prereq)
+
+The sc_helper artifact has four mach-o universal binaries:
+
+  * `sc-helper`           — the daemon
+  * `sc-helper-install`   — runs once under admin to register the daemon
+  * `sc-helper-uninstall` — runs once under admin to deregister
+  * `sc-helper-ping`      — debug tool, no admin needed, prints status
+
+The sc_mac GUI's `tools/build-station.sh` is responsible for:
+
+1. Downloading the latest helper bundle. The `sc_helper` GitHub workflow
+   uploads them as a Release asset on every tag (and as an artifact on
+   every push for unreleased dev builds). The sc_mac CI fetches by tag:
+
+       curl -fL --retry 3 -o sc-helper-bundle.tar.gz \
+         "https://github.com/NiDeHaoDaGe/sc_helper/releases/download/$HELPER_VERSION/sc-helper-bundle.tar.gz"
+
+2. Extracting into `<App>.app/Contents/Resources/sc_helper/`:
+
+       Mantouyun.app/Contents/Resources/sc_helper/sc-helper
+       Mantouyun.app/Contents/Resources/sc_helper/sc-helper-install
+       Mantouyun.app/Contents/Resources/sc_helper/sc-helper-uninstall
+       Mantouyun.app/Contents/Resources/sc_helper/sc-helper-ping
+
+3. Also placing the GUI's mihomo binary **alongside** the helper binaries
+   under the helper-expected name `sc-mihomo`:
+
+       Mantouyun.app/Contents/Resources/sc_helper/sc-mihomo
+
+   This is just `mihomo-darwin-{arch}` renamed. The reason it's bundled
+   here and not under the GUI's own Resources/mihomo/: the install binary
+   resolves its siblings via `current_exe().parent()`, so they have to be
+   colocated. Keeping mihomo inside the sc_helper/ subdir also means
+   when the install binary copies "everything from my dir" to
+   `/Library/PrivilegedHelperTools/`, we get mihomo for free.
+
+4. Code-signing the helper binaries with the same ad-hoc identity the
+   sc_mac uses. Required because launchctl bootstrap on Sequoia 15+
+   refuses to load unsigned binaries from `/Library/PrivilegedHelperTools/`.
+
+5. Adding two NSMicrosoftSandbox.app entitlements to the GUI's Info.plist
+   (TBD if we end up sandboxed — current builds aren't).
+
+### First-launch install flow (GUI side, phase 2)
+
+```dart
+// pseudocode
+final installer = AppPaths.bundleResources/'sc_helper/sc-helper-install';
+final args = ['-e',
+  'do shell script "${installer.path.shellEscaped}" with administrator privileges'];
+await Process.run('osascript', args);
+// One password prompt; if OK, helper is registered + running + ready
+// to take IPC on /var/run/sc-helper.sock.
+```
+
+Recovery if install fails (user canceled prompt, plist write failed,
+etc.): GUI falls back to the existing sidecar path — runs mihomo as the
+logged-in user, no TUN. User sees a banner "高级功能不可用, 点这里重试
+安装".
+
 ## What we're NOT copying from Verge
 
 - The `RunningMode { Service, Sidecar, NotRunning }` enum in the GUI. We collapse

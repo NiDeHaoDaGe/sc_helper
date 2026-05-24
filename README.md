@@ -40,23 +40,43 @@ CI does this automatically on macOS runner — see [`.github/workflows/build.yml
 ```
 sc_helper/
 ├── Cargo.toml           — workspace + dependencies
+├── build.rs             — bakes git SHA into HELPER_BUILD_SHA
 ├── src/
 │   ├── lib.rs           — IPC types, HMAC helpers (shared by all binaries)
 │   ├── ipc.rs           — protocol: Request / Response, framing
+│   ├── paths.rs         — socket / install / plist path constants
 │   ├── service/
 │   │   ├── core.rs      — mihomo spawn / supervise / kill state machine
-│   │   ├── server.rs    — IPC server loop (Unix socket / named pipe)
-│   │   └── platform/
-│   │       ├── macos.rs — LaunchDaemon glue, signal handling
-│   │       └── windows.rs — SCM control handler, named pipe ACL
+│   │   ├── dns.rs       — networksetup wrappers (mac SetDns / ClearDns)
+│   │   └── server.rs    — IPC server loop (Unix socket / named pipe phase 3)
 │   └── bin/
-│       ├── sc_helper.rs       — the daemon binary itself
-│       ├── sc_helper_install.rs   — install-time helper: write plist, register service
-│       └── sc_helper_uninstall.rs — bootout + rm plist / sc delete
+│       ├── sc_helper.rs           — the daemon binary itself
+│       ├── sc_helper_install.rs   — install-time: write plist, register service
+│       ├── sc_helper_uninstall.rs — bootout + rm plist / sc delete
+│       └── sc_helper_ping.rs      — debug tool: send one Ping/Version IPC
 ├── files/
-│   └── com.scloud.helper.plist.tmpl  — LaunchDaemon template
+│   └── com.scloud.helper.plist.tmpl  — LaunchDaemon template (reference)
+├── tests/
+│   └── integration_macos.rs  — spawns daemon, talks to it, exercises 4 commands
 └── .github/workflows/build.yml
 ```
+
+## Debugging an installed helper
+
+After `sc-helper-install` puts the binaries in `/Library/PrivilegedHelperTools/com.scloud.helper/`,
+the ping tool is reachable from any user account:
+
+```
+$ /Library/PrivilegedHelperTools/com.scloud.helper/sc-helper-ping
+pong
+$ /Library/PrivilegedHelperTools/com.scloud.helper/sc-helper-ping version
+v=0.1.0 sha=982cb3a1f3d4
+```
+
+Exit code 0 = pong, 2 = helper replied with Error, 3 = unexpected response,
+non-zero anywhere = connection issue (helper not running / socket missing).
+Customer support tickets that say "TUN doesn't work" should start with the
+output of this command.
 
 ## Brand / namespace
 
@@ -76,12 +96,18 @@ namespace there. For now: one helper, one socket, all brands talk to it.
 
 ## Status
 
-**Phase 0** (this commit) — repo skeleton, IPC protocol spec, Mac LaunchDaemon
-templates, CI scaffolding. Does **not** spawn mihomo yet, does **not** actually
-listen on the socket. Just compiles + lays groundwork.
+**Phase 1** (current) — Mac MVP. Daemon binds the Unix socket, dispatches all
+six IPC commands. `Ping` / `GetVersion` / `StartMihomo` / `StopMihomo` /
+`SetDns` (real `networksetup`) / `ClearDns` / `Shutdown` all wired. Install
++ uninstall binaries register / deregister the LaunchDaemon. Integration test
+spawns the daemon, runs four commands, asserts responses. CI on macos-14
+produces a universal-binary tarball + four bare binaries on every tag.
 
-Phases tracked in the [parent project task list](../sc_win/.git/) and in
-`docs/design.md`.
+What's NOT in phase 1: sc_mac GUI doesn't talk to the helper yet (phase 2).
+Windows is a stub (phase 3). No self-update / GUI-side cleanup on uninstall
+(phase 4).
+
+Phases tracked in `docs/design.md` and the parent project task list.
 
 ## License
 

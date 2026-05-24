@@ -35,6 +35,14 @@ path = "src/bin/sc_helper_install.rs"
 name = "sc-helper-uninstall"
 path = "src/bin/sc_helper_uninstall.rs"
 
+# Debug tool: shipped alongside the daemon for support troubleshooting + CI
+# smoke tests. Sends one Ping IPC, prints "pong v=X sha=Y" or the error.
+# Not invoked by the GUI; users run it from Terminal when "the helper looks
+# stuck" to confirm the IPC is alive.
+[[bin]]
+name = "sc-helper-ping"
+path = "src/bin/sc_helper_ping.rs"
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

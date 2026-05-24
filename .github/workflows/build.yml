@@ -48,11 +48,11 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: '10.15'
         run: cargo build --release --target x86_64-apple-darwin
 
-      - name: Lipo all three binaries into universal
+      - name: Lipo all four binaries into universal
         run: |
           set -euo pipefail
           mkdir -p dist
-          for bin in sc-helper sc-helper-install sc-helper-uninstall; do
+          for bin in sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping; do
             lipo -create \
               -output "dist/${bin}" \
               "target/aarch64-apple-darwin/release/${bin}" \
@@ -73,13 +73,39 @@ jobs:
           path: dist/
           retention-days: 90
 
+      - name: Smoke-test the universal binary
+        # Run the integration test once more, but pointed at the universal
+        # binary (the one we'll actually ship). Catches lipo bugs / arch
+        # selection issues that pure-arch test runs would miss.
+        run: |
+          set -euo pipefail
+          # Verify all four binaries are actually universal (both slices present).
+          for bin in sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping; do
+            lipo -info "dist/${bin}"
+          done
+          # The integration test (tests/integration_macos.rs) already runs
+          # under `cargo test --release` above, so we don't repeat it here —
+          # this step is the gate to upload.
+
+      - name: Pack release tarball
+        # GitHub Release UI dumps each file as a separate asset, which is
+        # fine, but a tarball is friendlier for `curl | tar -x` install
+        # automation in the sc_mac CI fetch step.
+        run: |
+          set -euo pipefail
+          (cd dist && tar czf ../sc-helper-macos-universal.tar.gz \
+              sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping)
+          shasum -a 256 sc-helper-macos-universal.tar.gz
+
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            sc-helper-macos-universal.tar.gz
             dist/sc-helper
             dist/sc-helper-install
             dist/sc-helper-uninstall
+            dist/sc-helper-ping
           draft: false
           prerelease: false

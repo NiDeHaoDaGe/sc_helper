@@ -12,4 +12,6 @@
 //! point of the architecture: smaller attack surface = easier audit.
 
 pub mod core;
+#[cfg(target_os = "macos")]
+pub mod dns;
 pub mod server;

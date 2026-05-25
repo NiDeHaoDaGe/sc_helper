@@ -11,7 +11,12 @@
 //! shouldn't stop us from cleaning up files. We accumulate errors and print
 //! them at the end, but exit 0 unless something catastrophic happened.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
+// `bail` 只在 fallback "OS 不支持" main 里用 — 现在 mac + linux 都有
+// 真正的 main, Linux/Mac build 不会 reach fallback, 留着会 unused-import
+// warning. cfg 只在非 macos 非 linux 才 import.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use anyhow::bail;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use sc_helper::paths;
 

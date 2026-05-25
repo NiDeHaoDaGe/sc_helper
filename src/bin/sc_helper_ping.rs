@@ -24,6 +24,9 @@ use sc_helper::IPC_SECRET;
 #[cfg(target_os = "macos")]
 const SOCKET_PATH: &str = sc_helper::paths::macos::SOCKET_PATH;
 
+#[cfg(target_os = "linux")]
+const SOCKET_PATH: &str = sc_helper::paths::linux::SOCKET_PATH;
+
 #[cfg(target_os = "windows")]
 const SOCKET_PATH: &str = sc_helper::paths::windows::PIPE_NAME;
 

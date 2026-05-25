@@ -1,0 +1,37 @@
+# sc-helper systemd unit template. 安装时由 sc_helper_install.rs 写到
+# `/etc/systemd/system/sc-helper.service`. 跟 mac plist 同款 — long-running
+# daemon, 失败自动 restart, log 走系统设施 (journald 而不是 launchd plist
+# 里的 StandardOutPath).
+#
+# 在 sc_helper_install.rs 里 include_str! 这个文件后直接写, 没字符串替换
+# 必要 (路径都 hardcoded, 跟 paths::linux 模块的常量手动对齐).
+[Unit]
+Description=SCloud VPN Helper
+Documentation=https://github.com/NiDeHaoDaGe/sc_helper
+# 网络起来之后才启 — IPC socket 在 /run/ 不需要网络, 但 helper 会
+# spawn mihomo 是网络应用, 等 network.target 是 cleaner ordering.
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/sc-helper/sc-helper
+
+# Restart=on-failure: helper crash 自动重启 (跟 mac launchd KeepAlive=true
+# 同款). 不用 always — manual systemctl stop 不该 trigger restart.
+Restart=on-failure
+RestartSec=1s
+
+# stdout/stderr 默认走 journald (`journalctl -u sc-helper -f` 看 log).
+# RUST_LOG=info 控制 env_logger level.
+Environment=RUST_LOG=info
+
+# helper 跑 root (Linux 创建 utun 必须 root). 不限制 capabilities —
+# 跟 mac launchd 默认行为一致, helper 内部已经 own kill/exec 权限.
+# 想 hardening 留 phase 4 加 CapabilityBoundingSet=CAP_NET_ADMIN 之类.
+User=root
+Group=root
+
+[Install]
+# multi-user.target = standard "system is up + multi-user mode" target.
+# `systemctl enable` 创建 .wants/ symlink 到这, 开机自启.
+WantedBy=multi-user.target

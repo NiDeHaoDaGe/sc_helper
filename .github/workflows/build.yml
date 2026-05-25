@@ -1,15 +1,18 @@
 name: Build sc_helper
 
-# Phase 0/1 — macOS universal build only. Phase 3 adds windows-2022 matrix.
+# Phase 0/1 — macOS universal build. Phase 2 — 加 Linux x86_64 build.
+# Phase 3 加 windows-2022 matrix.
 #
 # **手动触发 only** (workflow_dispatch). macOS runner 计费 10× Linux,
 # helper 二进制极少改, 不值得 push 自动跑 (跟 sc_mac build-macos.yml 同
-# 一规矩, 用户 2026-05-20 定的)。需要新 build 时 Actions 页面 "Run
-# workflow", 想发版就先 tag v0.x.y 再触发。
+# 一规矩, 用户 2026-05-20 定的). Linux runner 免费但保持同一手动 only
+# 流程, 单 dispatch 同时 build 两个 OS, 一致.
 #
-# 输出: 4 个 universal mach-o (sc-helper / -install / -uninstall / -ping,
-# arm64 + x86_64 lipo'd) 上传成 artifact + tarball。tag 触发时同时 attach
-# 到 GitHub Release 让 sc_mac CI curl 拉。
+# 输出:
+#   * build-macos job: 4 个 universal mach-o (sc-helper / -install /
+#     -uninstall / -ping, arm64 + x86_64 lipo'd) + tarball
+#   * build-linux job: 4 个 x86_64 ELF + tarball
+# tag 触发时同时 attach 到 GitHub Release 让 sc_mac / sc_linux CI 拉.
 
 on:
   workflow_dispatch:
@@ -107,6 +110,72 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           files: |
             sc-helper-macos-universal.tar.gz
+            dist/sc-helper
+            dist/sc-helper-install
+            dist/sc-helper-uninstall
+            dist/sc-helper-ping
+          draft: false
+          prerelease: false
+
+  build-linux:
+    # Phase 2 加. ubuntu-22.04 跟 sc_linux build-linux.yml 同一 runner,
+    # glibc 2.35 lower bound — Debian 12 / Ubuntu 22.04+ 都能跑.
+    # 不需要 universal 像 mac, Linux 只 x86_64 (arm64 留 phase 3 加
+    # matrix runner ubuntu-22.04-arm public preview).
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + cross target
+        run: |
+          rustup target add x86_64-unknown-linux-gnu
+          rustc --version
+          cargo --version
+
+      - name: Build x86_64-unknown-linux-gnu
+        # release profile in Cargo.toml 已 set opt-level=z + lto, helper
+        # binary 比较小 (~2-4 MB). 不 strip symbols here — Cargo profile
+        # 里 strip = "symbols" 已 done.
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Run tests on host arch
+        # IPC + HMAC tests — pure-Rust 跨平台. mac job 也跑同样 set,
+        # Linux 这边再跑一遍 catch Linux-specific regression (e.g. paths
+        # module 改坏什么).
+        run: cargo test --release
+
+      - name: Pack dist
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for bin in sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping; do
+            cp "target/x86_64-unknown-linux-gnu/release/${bin}" "dist/${bin}"
+            file "dist/${bin}"
+            ls -la "dist/${bin}"
+          done
+
+      - name: Pack release tarball
+        # 跟 mac tarball 同款 — 让 sc_linux CI `curl | tar -x` 一行装上.
+        run: |
+          set -euo pipefail
+          (cd dist && tar czf ../sc-helper-linux-x86_64.tar.gz \
+              sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping)
+          sha256sum sc-helper-linux-x86_64.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sc-helper-linux-x86_64-${{ github.sha }}
+          path: dist/
+          retention-days: 90
+
+      - name: Attach to release
+        if: ${{ inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            sc-helper-linux-x86_64.tar.gz
             dist/sc-helper
             dist/sc-helper-install
             dist/sc-helper-uninstall

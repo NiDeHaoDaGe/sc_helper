@@ -12,7 +12,7 @@
 //! them at the end, but exit 0 unless something catastrophic happened.
 
 use anyhow::{bail, Result};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use sc_helper::paths;
 
 #[cfg(target_os = "macos")]
@@ -72,7 +72,69 @@ fn main() -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn main() -> Result<()> {
-    bail!("sc-helper-uninstall: this binary is macOS-only in phase 0. Windows uninstaller comes in phase 3.")
+    eprintln!("[sc-helper-uninstall] starting (linux/systemd)");
+
+    let mut errors: Vec<String> = Vec::new();
+
+    // 1. systemctl disable --now (stop + remove auto-start symlink).
+    let status = std::process::Command::new("systemctl")
+        .args(["disable", "--now", paths::linux::SERVICE_NAME])
+        .status();
+    match status {
+        Ok(s) if s.success() => eprintln!("[sc-helper-uninstall] disable --now OK"),
+        Ok(s) => eprintln!(
+            "[sc-helper-uninstall] disable --now exit {} (likely already stopped/missing)",
+            s
+        ),
+        Err(e) => errors.push(format!("disable --now: {e}")),
+    }
+
+    // 2. rm systemd unit.
+    if std::path::Path::new(paths::linux::SYSTEMD_UNIT_PATH).exists() {
+        if let Err(e) = std::fs::remove_file(paths::linux::SYSTEMD_UNIT_PATH) {
+            errors.push(format!("rm unit: {e}"));
+        } else {
+            eprintln!("[sc-helper-uninstall] removed systemd unit");
+        }
+    }
+
+    // 3. daemon-reload 让 systemctl 忘掉 dead unit.
+    let _ = std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .status();
+
+    // 4. rm install dir.
+    if std::path::Path::new(paths::linux::HELPER_INSTALL_DIR).exists() {
+        if let Err(e) = std::fs::remove_dir_all(paths::linux::HELPER_INSTALL_DIR) {
+            errors.push(format!("rm install dir: {e}"));
+        } else {
+            eprintln!("[sc-helper-uninstall] removed install dir");
+        }
+    }
+
+    // 5. rm socket (helper graceful shutdown 会清, 但 crashed 残留兜底).
+    if std::path::Path::new(paths::linux::SOCKET_PATH).exists() {
+        let _ = std::fs::remove_file(paths::linux::SOCKET_PATH);
+    }
+
+    if errors.is_empty() {
+        eprintln!("[sc-helper-uninstall] done");
+        Ok(())
+    } else {
+        for e in &errors {
+            eprintln!("[sc-helper-uninstall] WARN: {e}");
+        }
+        eprintln!(
+            "[sc-helper-uninstall] done with {} warning(s)",
+            errors.len()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn main() -> Result<()> {
+    bail!("sc-helper-uninstall: not yet implemented on this OS. Windows uninstaller comes in phase 3.")
 }

@@ -32,6 +32,19 @@ fn resolve_mihomo_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/Library/PrivilegedHelperTools/com.scloud.helper/sc-mihomo"))
 }
 
+#[cfg(target_os = "linux")]
+fn resolve_mihomo_path() -> PathBuf {
+    // 同 mac 思路: 取 *this* exe 同目录的 sc-mihomo, 不让 GUI 通过 IPC
+    // 传任意 path (那等于 GUI 可以让 helper 用 root 跑任意 binary).
+    // Linux install dir 是 `/usr/lib/sc-helper/`, 所以 mihomo 在
+    // `/usr/lib/sc-helper/sc-mihomo`.
+    let me = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from(sc_helper::paths::linux::HELPER_BINARY));
+    me.parent()
+        .map(|p| p.join("sc-mihomo"))
+        .unwrap_or_else(|| PathBuf::from("/usr/lib/sc-helper/sc-mihomo"))
+}
+
 #[cfg(target_os = "windows")]
 #[allow(dead_code)] // Wired up in phase 3 once the named-pipe server is in.
 fn resolve_mihomo_path() -> PathBuf {

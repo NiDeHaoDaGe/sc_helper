@@ -171,13 +171,28 @@ pub mod unix {
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::Mutex;
 
-    /// Resolve the socket path. Production: hard-coded /var/run path. Test:
+    /// Resolve the socket path. Production: hard-coded per-OS path. Test:
     /// `SC_HELPER_SOCKET_OVERRIDE` env var lets the integration test pick a
     /// /tmp path so it can run as non-root without colliding with any
     /// production helper the dev may have installed.
+    ///
+    /// 平台差异:
+    ///   * mac: `/var/run/sc-helper.sock` (`/var/run` 是 symlink 到
+    ///     `/private/var/run`, root:wheel 0755)
+    ///   * linux: `/run/sc-helper.sock` (`/var/run` 在现代 Linux 也是
+    ///     symlink 到 `/run`, 我们用 canonical form)
     fn socket_path() -> String {
-        std::env::var("SC_HELPER_SOCKET_OVERRIDE")
-            .unwrap_or_else(|_| paths::macos::SOCKET_PATH.to_string())
+        if let Ok(over) = std::env::var("SC_HELPER_SOCKET_OVERRIDE") {
+            return over;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            paths::macos::SOCKET_PATH.to_string()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            paths::linux::SOCKET_PATH.to_string()
+        }
     }
 
     /// Bind the listener, set perms, accept forever. Returns only on fatal

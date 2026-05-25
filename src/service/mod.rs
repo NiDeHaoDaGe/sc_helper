@@ -12,6 +12,15 @@
 //! point of the architecture: smaller attack surface = easier audit.
 
 pub mod core;
+// Platform-specific DNS surgery. Mac 走 networksetup (per-service DNS),
+// Linux 走 resolvectl (systemd-resolved per-iface DNS). 接口一致:
+//   pub async fn set_dns(servers: &[String]) -> Result<()>
+//   pub async fn clear_dns() -> Result<()>
+// server.rs Command::SetDns / ClearDns 调这俩.
 #[cfg(target_os = "macos")]
+#[path = "dns_macos.rs"]
+pub mod dns;
+#[cfg(target_os = "linux")]
+#[path = "dns_linux.rs"]
 pub mod dns;
 pub mod server;

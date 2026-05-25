@@ -71,6 +71,12 @@ env_logger = "0.11"
 #                    Wintun/utun adapter cleanly)
 nix = { version = "0.28", features = ["user", "fs", "signal", "process"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# 同 mac 共享 POSIX 依赖. service/core.rs::stop 已 #[cfg(unix)] 走 nix
+# kill SIGTERM; install/uninstall 用 nix chown/chmod (Linux root 组叫
+# `root` 不是 `wheel` 但 uid/gid 都是 0, API 一样).
+nix = { version = "0.28", features = ["user", "fs", "signal", "process"] }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # Phase 3 — leave the dep declarations here so `cargo metadata` is consistent
 # across platforms; phase-0 macOS build doesn't actually pull them.

@@ -38,6 +38,37 @@ pub mod macos {
     pub const SOCKET_PATH: &str = "/var/run/sc-helper.sock";
 }
 
+#[cfg(target_os = "linux")]
+pub mod linux {
+    /// systemd unit name. `systemctl <action> sc-helper` 操作 service.
+    pub const SERVICE_NAME: &str = "sc-helper";
+
+    /// systemd unit file path. `systemctl daemon-reload` 之后 enable.
+    pub const SYSTEMD_UNIT_PATH: &str = "/etc/systemd/system/sc-helper.service";
+
+    /// Linux 上 privileged helper 通常放 `/usr/lib/<service>/` (跟
+    /// NetworkManager, systemd 自家 plugin 一致). `/Library/PrivilegedHelperTools/`
+    /// 是 macOS specific, Linux 不用. `/opt/` 是 third-party 偏好 — 我们
+    /// 走 distro-friendly 的 `/usr/lib/`.
+    pub const HELPER_INSTALL_DIR: &str = "/usr/lib/sc-helper";
+
+    /// The helper binary itself.
+    pub const HELPER_BINARY: &str = "/usr/lib/sc-helper/sc-helper";
+
+    /// stdout / stderr — systemd 默认把 service 的 stdout/stderr 捕获到
+    /// journald. 我们仍然 declare 文件 path 是给 RUST_LOG 想 redirect
+    /// 到独立 file 时备用 (不是默认行为). 默认走 journald, `journalctl
+    /// -u sc-helper -f` 看 log.
+    pub const STDOUT_LOG: &str = "/var/log/sc-helper.log";
+    pub const STDERR_LOG: &str = "/var/log/sc-helper.err.log";
+
+    /// IPC socket path. `/run` 是现代 Linux 标准 (相比老 `/var/run`,
+    /// `/var/run` 现在 typically 是个 symlink to `/run`). 默认 `root:root
+    /// 0755` 目录, helper bind 后 `chmod 0666` socket 让 unprivileged
+    /// GUI 能连. HMAC 是 auth, 不靠文件权限.
+    pub const SOCKET_PATH: &str = "/run/sc-helper.sock";
+}
+
 #[cfg(target_os = "windows")]
 pub mod windows {
     /// SCM service name. `sc create <this>` / `sc delete <this>`.

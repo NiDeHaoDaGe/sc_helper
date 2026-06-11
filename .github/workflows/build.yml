@@ -118,25 +118,38 @@ jobs:
           prerelease: false
 
   build-linux:
-    # Phase 2 加. ubuntu-22.04 跟 sc_linux build-linux.yml 同一 runner,
-    # glibc 2.35 lower bound — Debian 12 / Ubuntu 22.04+ 都能跑.
-    # 不需要 universal 像 mac, Linux 只 x86_64 (arm64 留 phase 3 加
-    # matrix runner ubuntu-22.04-arm public preview).
+    # ubuntu-22.04 (x86_64 runner), glibc 2.35 lower bound — Debian 12 /
+    # Ubuntu 22.04+ 都能跑. **x86_64 native + aarch64 交叉编译** —— 两个 ELF
+    # tarball 都发到同一个 release tag, sc_linux 的 x86_64 / aarch64 build 各拉
+    # 对应那个。Rust 纯 std 无 C 依赖, 交叉编译干净 (不像 Flutter 必须 native runner)。
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust + cross target
+      - name: Install Rust + cross targets
         run: |
-          rustup target add x86_64-unknown-linux-gnu
+          rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
           rustc --version
           cargo --version
+
+      - name: Install aarch64 cross-linker
+        # 在 x86_64 runner 上交叉编译 aarch64 ELF, 需要 aarch64 的 gcc 链接器。
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build x86_64-unknown-linux-gnu
         # release profile in Cargo.toml 已 set opt-level=z + lto, helper
         # binary 比较小 (~2-4 MB). 不 strip symbols here — Cargo profile
         # 里 strip = "symbols" 已 done.
         run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Build aarch64-unknown-linux-gnu (cross)
+        # 交叉编译 ARM64 ELF。指定 aarch64 链接器; 纯 Rust + std 无 C 依赖,
+        # 交叉编译干净。sc_linux 的 aarch64 build 会拉这个 tarball。
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: cargo build --release --target aarch64-unknown-linux-gnu
 
       - name: Run tests on host arch
         # IPC + HMAC tests — pure-Rust 跨平台. mac job 也跑同样 set,
@@ -162,11 +175,30 @@ jobs:
               sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping)
           sha256sum sc-helper-linux-x86_64.tar.gz
 
-      - name: Upload artifact
+      - name: Pack aarch64 dist + tarball
+        run: |
+          set -euo pipefail
+          mkdir -p dist-arm64
+          for bin in sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping; do
+            cp "target/aarch64-unknown-linux-gnu/release/${bin}" "dist-arm64/${bin}"
+            file "dist-arm64/${bin}"
+          done
+          (cd dist-arm64 && tar czf ../sc-helper-linux-aarch64.tar.gz \
+              sc-helper sc-helper-install sc-helper-uninstall sc-helper-ping)
+          sha256sum sc-helper-linux-aarch64.tar.gz
+
+      - name: Upload artifact (x86_64)
         uses: actions/upload-artifact@v4
         with:
           name: sc-helper-linux-x86_64-${{ github.sha }}
           path: dist/
+          retention-days: 90
+
+      - name: Upload artifact (aarch64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sc-helper-linux-aarch64-${{ github.sha }}
+          path: dist-arm64/
           retention-days: 90
 
       - name: Attach to release
@@ -176,6 +208,7 @@ jobs:
           tag_name: ${{ inputs.release_tag }}
           files: |
             sc-helper-linux-x86_64.tar.gz
+            sc-helper-linux-aarch64.tar.gz
             dist/sc-helper
             dist/sc-helper-install
             dist/sc-helper-uninstall
